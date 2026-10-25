@@ -4,7 +4,7 @@ Automatic updates and release notifications for the tarball installation of **Go
 
 ---
 
-## 📌 Problem
+## Problem
 
 On Windows, Antigravity IDE comes with a built-in background updater. On Linux, however:
 - The IDE is typically installed by extracting a `.tar.gz` bundle into a user folder (e.g., `~/İndirilenler/Antigravity IDE` or `~/Downloads/Antigravity IDE`).
@@ -16,7 +16,7 @@ On Windows, Antigravity IDE comes with a built-in background updater. On Linux, 
 
 ---
 
-## ✨ Features
+## Features
 
 - **Zero Third-Party Python Dependencies:** Built strictly using the Python 3 standard library.
 - **Headless Page Parsing:** Uses headless Chrome/Chromium (`--dump-dom`) to reliably fetch dynamic release URLs and changelogs from `antigravity.google`.
@@ -32,7 +32,7 @@ On Windows, Antigravity IDE comes with a built-in background updater. On Linux, 
 
 ---
 
-## 📋 Requirements
+## Requirements
 
 - **Linux** (tested on Ubuntu 24.04, works on any modern systemd-based distro)
 - **Python 3.12+** (uses standard library `tarfile` extraction filters)
@@ -42,7 +42,7 @@ On Windows, Antigravity IDE comes with a built-in background updater. On Linux, 
 
 ---
 
-## 🚀 Quick Start / Installation
+## Quick Start / Installation
 
 ### 1. Clone the repository
 ```bash
@@ -71,7 +71,7 @@ journalctl --user -u antigravity-ide-updater.service -n 20 --no-pager
 
 ---
 
-## ⚙️ Manual Usage
+## Manual Usage
 
 You can also run a manual update check at any time:
 
@@ -89,7 +89,7 @@ python3 antigravity_changelog.py cli
 
 ---
 
-## 🔧 Configuration (Environment Variables)
+## Configuration (Environment Variables)
 
 By default, the updater looks for the IDE in:
 `~/İndirilenler/Antigravity IDE` (or localized `~/Downloads/Antigravity IDE`).
@@ -105,7 +105,7 @@ If your IDE is located elsewhere, you can configure it via environment variables
 
 ---
 
-## 🗑️ Uninstallation
+## Uninstallation
 
 To remove the scheduled timer and delete installed updater scripts:
 
@@ -117,6 +117,6 @@ Your IDE installation and user settings will remain completely untouched.
 
 ---
 
-## 🛡️ License
+## License
 
 GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
