@@ -26,22 +26,32 @@ class ChangelogError(RuntimeError):
 def _render_dom(url: str, timeout: int = 60) -> str:
     chrome = next((c for c in CHROME_CANDIDATES if shutil.which(c)), None)
     if not chrome:
-        raise ChangelogError("Chrome/Chromium bulunamadı.")
+        raise ChangelogError("Chrome or Chromium executable not found on the system.")
     try:
         result = subprocess.run(
-            [chrome, "--headless=new", "--disable-gpu", "--no-first-run",
-             "--virtual-time-budget=10000", "--dump-dom", url],
-            capture_output=True, text=True, timeout=timeout, check=True,
+            [
+                chrome,
+                "--headless=new",
+                "--disable-gpu",
+                "--no-first-run",
+                "--virtual-time-budget=10000",
+                "--dump-dom",
+                url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=True,
         )
     except (subprocess.SubprocessError, OSError) as exc:
-        raise ChangelogError(f"Sayfa işlenemedi: {exc}") from exc
+        raise ChangelogError(f"Failed to render page DOM: {exc}") from exc
     return result.stdout
 
 
 def _extract_panel(dom: str, tab: str) -> str:
     start = re.search(rf'id="panel-{re.escape(tab)}"', dom)
     if not start:
-        raise ChangelogError(f"'panel-{tab}' bulunamadı; sayfa yapısı değişmiş olabilir.")
+        raise ChangelogError(f"'panel-{tab}' not found in DOM; page structure may have changed.")
     rest = dom[start.end():]
     nxt = re.search(r'id="panel-[\w-]+"', rest)
     return rest[: nxt.start()] if nxt else rest
@@ -73,7 +83,7 @@ def fetch_changelog(tab: str = "ide") -> list[tuple[str, str]]:
 
     result = [(v, "\n".join(n)) for v, n in entries if v]
     if not result:
-        raise ChangelogError(f"'{tab}' sekmesinde sürüm bulunamadı.")
+        raise ChangelogError(f"No version entries found in changelog panel for '{tab}'.")
     return result
 
 
@@ -86,7 +96,7 @@ if __name__ == "__main__":
     try:
         entries = fetch_changelog(tab)
     except ChangelogError as exc:
-        print(f"Hata: {exc}", file=sys.stderr)
+        print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
     version, notes = entries[0]
-    print(f"En son {tab} sürümü: v{version}\n\n{notes}")
+    print(f"Latest {tab} version: v{version}\n\n{notes}")
