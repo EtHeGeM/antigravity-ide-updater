@@ -364,6 +364,28 @@ class TestAtomicInstallationAndRollback(unittest.TestCase):
         self.assertTrue(self.install_dir.exists())
         self.assertEqual(updater.installed_version(self.install_dir), "2.5.5")
 
+    def test_interrupted_install_recovery_corrupt_install_dir_restores_from_backup(self):
+        # Scenario: install_dir exists but is corrupt (empty directory without product.json)
+        self.install_dir.mkdir(parents=True, exist_ok=True)
+        temp_backup = self.base_path / f".{self.install_dir.name}.bak.tmp-12345"
+        self.create_mock_ide(temp_backup, "2.5.5")
+
+        recovered = updater.recover_interrupted_install(self.install_dir)
+        self.assertTrue(recovered)
+        self.assertTrue(self.install_dir.exists())
+        self.assertEqual(updater.installed_version(self.install_dir), "2.5.5")
+
+    def test_interrupted_install_recovery_preserves_backups_when_no_valid_source(self):
+        # Scenario: install_dir is corrupt, and temp_backup is also corrupt/empty
+        self.install_dir.mkdir(parents=True, exist_ok=True)
+        temp_backup = self.base_path / f".{self.install_dir.name}.bak.tmp-12345"
+        temp_backup.mkdir(parents=True, exist_ok=True)
+
+        recovered = updater.recover_interrupted_install(self.install_dir)
+        self.assertFalse(recovered)
+        # Crucial safeguard: corrupt backup must NOT be deleted if there is no valid installation
+        self.assertTrue(temp_backup.exists())
+
     def test_idempotent_install(self):
         self.create_mock_ide(self.install_dir, "2.5.5")
         staged_root = self.pending_dir / "2.5.5" / "x" / "Antigravity IDE"
@@ -579,6 +601,40 @@ class TestCLIOptions(unittest.TestCase):
     def test_cli_dry_run(self, _, __):
         code = updater.dry_run()
         self.assertEqual(code, 0)
+
+    @patch.object(updater, "latest_release", return_value=("2.5.6", "https://edgedl.me.gvt1.com/test.tar.gz"))
+    @patch.object(updater, "ide_running", return_value=False)
+    def test_dry_run_has_no_filesystem_side_effects(self, _, __):
+        candidate = self.base_path / f".{self.install_dir.name}.candidate-999"
+        temp_backup = self.base_path / f".{self.install_dir.name}.bak.tmp-999"
+        candidate.mkdir()
+        temp_backup.mkdir()
+
+        def snapshot():
+            return sorted(str(p.relative_to(self.base_path)) for p in self.base_path.rglob("*"))
+
+        before = snapshot()
+        code = updater.dry_run()
+        self.assertEqual(code, 0)
+        after = snapshot()
+        self.assertEqual(before, after)
+
+    @patch.object(updater, "latest_release", return_value=("2.5.6", "https://edgedl.me.gvt1.com/test.tar.gz"))
+    @patch.object(updater, "release_notes", return_value="Some notes")
+    def test_check_has_no_filesystem_side_effects(self, _, __):
+        candidate = self.base_path / f".{self.install_dir.name}.candidate-999"
+        temp_backup = self.base_path / f".{self.install_dir.name}.bak.tmp-999"
+        candidate.mkdir()
+        temp_backup.mkdir()
+
+        def snapshot():
+            return sorted(str(p.relative_to(self.base_path)) for p in self.base_path.rglob("*"))
+
+        before = snapshot()
+        code = updater.check_updates()
+        self.assertEqual(code, 0)
+        after = snapshot()
+        self.assertEqual(before, after)
 
     @patch.object(updater, "ide_running", return_value=False)
     def test_cli_status(self, _):

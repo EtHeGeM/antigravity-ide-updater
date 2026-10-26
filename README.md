@@ -21,21 +21,21 @@ On Windows, Antigravity IDE includes a built-in background updater. On Linux, ho
 ## Key Features
 
 - **Zero Third-Party Python Dependencies:** Built strictly using the Python standard library.
-- **Atomic Replacement & Automated Rollback:** Prepares candidates on the destination filesystem before replacing the current installation. Automatically rolls back to the previous version if swap or verification fails.
+- **Safe Replacement & Rollback:** Prepares candidates on the destination filesystem and swaps directories using same-filesystem renames. Automatically rolls back to the previous version if swap or version verification fails.
 - **Non-Destructive Backups:** Previous backups (`<InstallDir>.bak`) are never deleted before a new recovery point is confirmed healthy.
-- **Interrupted Installation Recovery:** Detects crashes or power cuts between filesystem operations and automatically restores from recovery points on the next run.
-- **Hardened Path Security (`assert_safe`):** Prevents path abuse; strictly refuses operations on system paths (`/`, `/usr`, `/etc`, `/var`, `/bin`, etc.) and user settings directories (`~/.config`, `~/.antigravity`, `~/.gemini`, `~/.local`).
-- **Secure Downloads & Tarball Extraction:** Enforces HTTPS on trusted Google CDN domains (`*.google.com`, `*.gvt1.com`, `*.googleapis.com`, `antigravity.google`), verifies HTTP redirects, enforces download size limits, and sanitizes tarball extraction against path traversal (Zip Slip), symlink escapes, hardlink escapes, and special device nodes.
+- **Interrupted Installation Recovery:** Detects crashes between filesystem operations and automatically restores from recovery points on the next run.
+- **Path Security Checks (`assert_safe`):** Prevents accidental operations on system paths (`/`, `/usr`, `/etc`, `/var`, `/bin`, etc.) and user configuration directories (`~/.config`, `~/.antigravity`, `~/.gemini`, `~/.local`).
+- **Secure HTTPS Downloads & Safe Extraction:** Enforces HTTPS on trusted Google CDN domains (`*.google.com`, `*.gvt1.com`, `*.googleapis.com`, `antigravity.google`), validates redirects, enforces size limits, and sanitizes tarball extraction against path traversal (Zip Slip), symlink escapes, hardlink escapes, and special device nodes.
 - **Concurrency Protection:** Uses Linux `fcntl.flock` to guarantee that two updater instances never modify files simultaneously.
 - **Process-Aware Staging:** Inspects `/proc` to detect running IDE processes (including handles with `(deleted)` binaries) and stages downloads safely until the IDE is closed.
-- **Decoupled Architecture:** Direct HTTPS release discovery does not depend on Chrome. Headless rendering is used strictly for changelog parsing, and changelog failures never block updates.
-- **Systemd User Integration:** Runs entirely rootless under `systemd --user` with persistent daily timers and journal logging.
+- **Decoupled Architecture:** Direct HTTPS release discovery does not depend on Chrome. Headless rendering is used strictly as a fallback or for changelog parsing; changelog failures never block updates.
+- **Systemd User Integration:** Runs rootless under `systemd --user` with persistent daily timers and journal logging.
 
 ---
 
 ## Supported Environments & Requirements
 
-- **Linux Distribution:** Tested and validated on **Ubuntu 24.04 LTS (Noble Numbat)**. Compatible with Debian 12+, Fedora 39+, Arch Linux, openSUSE, and other modern Linux distributions using systemd.
+- **Linux Distribution:** Tested on **Ubuntu 24.04 LTS (Noble Numbat)** (x86_64). Should theoretically work on other modern systemd-based Linux distributions (Debian, Fedora, Arch, openSUSE), but they are not actively tested.
 - **Python Version:** Python **3.10, 3.11, 3.12, or 3.13**.
 - **System Dependencies:**
   - `systemd` (with user session support).
@@ -130,25 +130,28 @@ The updater automatically checks localized paths (`~/İndirilenler/Antigravity I
 - **Extraction Defense:** Archives are parsed and validated entry by entry. Traversal paths (`../`), absolute paths (`/`), symlinks resolving outside the extraction root, hardlinks escaping the sandbox, and device nodes (character/block/FIFO) are rejected.
 - **Data Protection:** The updater never touches user configurations (`~/.config`), extensions, or IDE user state (`~/.antigravity`, `~/.gemini`).
 
-### Known Limitations
-- **No Official Cryptographic Signatures:** Google does not currently publish GPG signatures, SHA256 checksum files, or hashes on the Antigravity IDE Linux download portal.
-- **Integrity Baseline:** The updater computes and logs the SHA256 digest of downloaded archives and validates the internal `product.json` schema and version metadata. However, this relies on TLS transport security to Google CDN endpoints and does not provide offline cryptographic proof against an in-transit compromise of Google's distribution infrastructure.
+### Known Limitations & Integrity Model
+- **No Official Cryptographic Signatures or Checksums:** Google does not publish GPG signatures, SHA256 checksums, or hashes on the Antigravity IDE download portal.
+- **Transport Security Only:** The updater verifies that download URLs and redirects belong to official Google domains (`antigravity.google`, `*.gvt1.com`, etc.) over HTTPS. While HTTPS protects against network-level tampering in transit, it does not independently prove archive authenticity or provide offline cryptographic proof.
+- **Diagnostic SHA256:** The updater computes and logs the SHA256 digest of downloaded archives strictly for diagnostic and troubleshooting purposes. Because there is no official reference checksum, it is not compared against a trusted reference.
 
 ---
 
-## Rollback & Crash Recovery
+## Replacement Sequence & Recovery
 
-### Backup Strategy
-When an update is applied:
-1. The update is staged in `~/.local/state/antigravity-ide-updater/pending/<version>`.
-2. A candidate directory is verified on the destination filesystem (`.<InstallDir>.candidate-<pid>`).
-3. The current installation is atomically swapped to `.<InstallDir>.bak.tmp-<pid>`.
-4. The candidate is swapped to `<InstallDir>`.
-5. Post-installation integrity of `<InstallDir>` is verified.
-6. Only after verification succeeds is the temporary backup promoted to `<InstallDir>.bak`.
+### Update Sequence
+While individual `os.rename()` calls on the same filesystem are atomic POSIX operations, the overall directory replacement involves multiple discrete steps:
+1. The update is staged and verified in `~/.local/state/antigravity-ide-updater/pending/<version>`.
+2. A candidate copy is prepared on the destination filesystem (`.<InstallDir>.candidate-<pid>`).
+3. The existing installation is renamed to a temporary backup (`.<InstallDir>.bak.tmp-<pid>`).
+4. The candidate directory is renamed to `<InstallDir>`.
+5. The newly placed `<InstallDir>` is verified (`product.json` and version).
+6. Once verified, the temporary backup is promoted to `<InstallDir>.bak`, replacing any older backup.
 
-### Automatic Recovery
-If a crash or power cut occurs during directory swaps, the next run of the updater detects the missing or incomplete directory and automatically restores the previous installation from `.<InstallDir>.bak.tmp-*` or `<InstallDir>.bak`.
+### Rollback & Crash Recovery
+- **Verification Failure:** If post-swap version verification fails, the candidate is discarded and `<InstallDir>` is restored from the temporary backup.
+- **Interrupted Updates:** If the process is terminated between rename operations, the next updater run detects that `<InstallDir>` is missing or corrupt and restores the previous working version from the temporary backup. Temporary backups are never deleted until the active installation is verified healthy.
+- **Limitations:** Multi-step filesystem operations cannot provide absolute transactional atomicity across sudden power failures, but this sequence ensures a working backup is preserved before the active installation is replaced.
 
 ### Manual Recovery
 If you ever wish to manually revert to the previous version:

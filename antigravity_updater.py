@@ -2,7 +2,7 @@
 """Linux auto-updater for the tarball install of Google Antigravity IDE.
 
 Flow: read installed version -> check latest release -> download & stage
-(or install atomically if IDE is not running) -> notify via notify-send.
+(or install if IDE is not running) -> notify via notify-send.
 """
 
 from __future__ import annotations
@@ -78,12 +78,11 @@ class LockContentionError(UpdateError):
 def parse_version(v: str) -> tuple[int, ...]:
     if not v or not isinstance(v, str):
         raise ValueError(f"Invalid version string: {v!r}")
-    cleaned = v.strip().lstrip("v")
-    base = re.split(r"[-+]", cleaned)[0]
-    nums = [int(p) for p in base.split(".") if p.isdigit()]
+    cleaned = v.strip().lstrip("v").split("-")[0].split("+")[0]
+    nums = [int(p) for p in cleaned.split(".") if p.isdigit()]
     if nums:
         return tuple(nums)
-    digits = [int(x) for x in re.findall(r"\d+", cleaned)]
+    digits = [int(x) for x in re.findall(r"\d+", v)]
     if digits:
         return tuple(digits)
     raise ValueError(f"Cannot parse version from {v!r}")
@@ -98,17 +97,15 @@ def get_system_arch() -> str:
     raise UpdateError(f"Unsupported system architecture: {m}")
 
 
-def arch() -> str:
-    return get_system_arch()
+arch = get_system_arch
 
 
-def arch_matches(url_arch: str, sys_arch: str) -> bool:
-    u = url_arch.lower()
-    if sys_arch == "x64":
-        return u in ("x64", "amd64", "x86_64")
-    if sys_arch == "arm64":
-        return u in ("arm64", "arm", "aarch64")
-    return False
+def is_valid_install(path: Path) -> bool:
+    """Return True if path contains a readable product.json with ideVersion."""
+    try:
+        return bool(installed_version(Path(path)))
+    except Exception:
+        return False
 
 
 def assert_safe(path: Path, require_installed: bool = True) -> None:
@@ -116,15 +113,14 @@ def assert_safe(path: Path, require_installed: bool = True) -> None:
     if not str(path).strip() or str(path) == "." or not path.name:
         raise UpdateError("Security: Invalid or empty target path.")
     p = path.resolve()
-    for check_p in (path, p):
-        for pref in FORBIDDEN_PREFIXES:
-            r = pref.resolve()
-            if check_p in (pref, r) or check_p.is_relative_to(r):
-                raise UpdateError(f"Security: Target path inside protected system directory {pref}: {path}")
-        for root in FORBIDDEN_ROOTS:
-            r = root.resolve()
-            if check_p in (root, r) or r.is_relative_to(check_p):
-                raise UpdateError(f"Security: Target path cannot be system directory {root}: {path}")
+    for pref in FORBIDDEN_PREFIXES:
+        r = pref.resolve()
+        if p in (pref, r) or p.is_relative_to(r):
+            raise UpdateError(f"Security: Target path inside protected system directory {pref}: {path}")
+    for root in FORBIDDEN_ROOTS:
+        r = root.resolve()
+        if p in (root, r) or r.is_relative_to(p):
+            raise UpdateError(f"Security: Target path cannot be system directory {root}: {path}")
 
     home = HOME.resolve()
     if p in (Path("/home"), home) or path in (Path("/home"), HOME):
@@ -138,16 +134,8 @@ def assert_safe(path: Path, require_installed: bool = True) -> None:
     if p.parent in (Path("/"), Path("/home")) or not p.parent.is_dir():
         raise UpdateError(f"Security: Installation parent directory invalid: {p.parent}")
 
-    if require_installed:
-        pj = p / "resources" / "app" / "product.json"
-        if not pj.is_file():
-            raise UpdateError(f"Security: {path} is not an Antigravity IDE installation (missing {pj}).")
-        try:
-            data = json.loads(pj.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or "ideVersion" not in data:
-                raise ValueError
-        except Exception as exc:
-            raise UpdateError(f"Security: Invalid product.json metadata in {path}: {exc}") from exc
+    if require_installed and not is_valid_install(p):
+        raise UpdateError(f"Security: {path} is not a valid Antigravity IDE installation.")
 
 
 def is_trusted_url(url: str) -> bool:
@@ -181,10 +169,7 @@ class ProcessLock:
             return self
         except (BlockingIOError, OSError) as exc:
             if self.fd is not None:
-                try:
-                    os.close(self.fd)
-                except OSError:
-                    pass
+                os.close(self.fd)
                 self.fd = None
             raise LockContentionError("Another updater instance is already running.") from exc
 
@@ -234,11 +219,11 @@ def installed_version(root: Path = INSTALL_DIR) -> str:
     try:
         data = json.loads(pj.read_text(encoding="utf-8"))
         ver = data.get("ideVersion")
-        if not ver or not isinstance(ver, str):
-            raise ValueError
-        return ver
-    except Exception as exc:
-        raise UpdateError(f"Cannot read installed version from {pj}: {exc}") from exc
+        if ver and isinstance(ver, str):
+            return ver
+    except Exception:
+        pass
+    raise UpdateError(f"Cannot read installed version from {pj}")
 
 
 def ide_running(root: Path = INSTALL_DIR) -> bool:
@@ -277,6 +262,11 @@ def fetch_download_page(timeout: int = 30) -> str:
         raise UpdateError(f"Failed to fetch Antigravity download page: {exc}") from exc
 
 
+def arch_matches(url_arch: str, sys_arch: str) -> bool:
+    u = url_arch.lower()
+    return (u in ("x64", "amd64", "x86_64")) if sys_arch == "x64" else (u in ("arm64", "arm", "aarch64"))
+
+
 def latest_release() -> tuple[str, str]:
     dom = fetch_download_page()
     sys_arch = get_system_arch()
@@ -312,10 +302,7 @@ def download_file(url: str, dest_path: Path, max_size: int, timeout: int) -> str
             if cl and int(cl) > max_size:
                 raise UpdateError(f"Download size {cl} exceeds limit of {max_size} bytes.")
             with open(temp_dest, "wb") as out:
-                while True:
-                    chunk = resp.read(1024 * 1024)
-                    if not chunk:
-                        break
+                while chunk := resp.read(1024 * 1024):
                     total += len(chunk)
                     if total > max_size:
                         raise UpdateError(f"Download exceeded limit of {max_size} bytes.")
@@ -323,11 +310,7 @@ def download_file(url: str, dest_path: Path, max_size: int, timeout: int) -> str
                     out.write(chunk)
         os.rename(temp_dest, dest_path)
     except Exception:
-        if temp_dest.exists():
-            try:
-                temp_dest.unlink()
-            except OSError:
-                pass
+        temp_dest.unlink(missing_ok=True)
         raise
     return hasher.hexdigest()
 
@@ -338,12 +321,10 @@ def extract_tarball_safe(archive_path: Path, target_dir: Path) -> None:
     with tarfile.open(archive_path, "r:*") as tar:
         for member in tar.getmembers():
             norm = os.path.normpath(member.name)
-            if norm.startswith("/") or norm == ".." or norm.startswith("../"):
+            if norm.startswith("/") or norm == ".." or norm.startswith(".." + os.sep):
                 raise UpdateError(f"Security: Path traversal entry: {member.name}")
             dest = (target_dir / norm).resolve()
-            try:
-                dest.relative_to(target_dir)
-            except ValueError:
+            if not dest.is_relative_to(target_dir):
                 raise UpdateError(f"Security: Entry points outside target: {member.name}")
             if member.isdev() or member.ischr() or member.isblk() or member.isfifo():
                 raise UpdateError(f"Security: Unsupported file type: {member.name}")
@@ -351,17 +332,13 @@ def extract_tarball_safe(archive_path: Path, target_dir: Path) -> None:
                 if member.linkname.startswith("/"):
                     raise UpdateError(f"Security: Absolute symlink: {member.name}")
                 link_dest = (dest.parent / member.linkname).resolve()
-                try:
-                    link_dest.relative_to(target_dir)
-                except ValueError:
+                if not link_dest.is_relative_to(target_dir):
                     raise UpdateError(f"Security: Escaped symlink: {member.name}")
             if member.islnk():
                 if member.linkname.startswith("/"):
                     raise UpdateError(f"Security: Absolute hardlink: {member.name}")
                 link_dest = (target_dir / os.path.normpath(member.linkname)).resolve()
-                try:
-                    link_dest.relative_to(target_dir)
-                except ValueError:
+                if not link_dest.is_relative_to(target_dir):
                     raise UpdateError(f"Security: Escaped hardlink: {member.name}")
         if hasattr(tarfile, "data_filter"):
             tar.extractall(target_dir, filter="data")
@@ -379,13 +356,11 @@ def purge_stale_pending(keep_version: str | None = None) -> None:
 
 def verify_pending(version: str) -> Path:
     target = PENDING_DIR / version
-    if not target.is_dir():
-        raise UpdateError(f"Staged update not found: {target}")
-    roots = [p.parents[2] for p in (target / "x").glob("**/resources/app/product.json")]
-    if len(roots) != 1 or parse_version(installed_version(roots[0])) != parse_version(version):
-        shutil.rmtree(target, ignore_errors=True)
-        raise UpdateError(f"Corrupted staged update for v{version}.")
-    return roots[0]
+    roots = [p.parents[2] for p in (target / "x").glob("**/resources/app/product.json")] if target.is_dir() else []
+    if len(roots) == 1 and parse_version(installed_version(roots[0])) == parse_version(version):
+        return roots[0]
+    shutil.rmtree(target, ignore_errors=True)
+    raise UpdateError(f"No valid staged update for v{version}.")
 
 
 def download_and_extract(url: str, version: str) -> Path:
@@ -395,20 +370,15 @@ def download_and_extract(url: str, version: str) -> Path:
     archive = temp_stage / "ide.tar.gz"
     try:
         logger.info("Downloading v%s (%s)", version, url)
+        # Note: SHA256 is computed and logged for diagnostic purposes only (Google does not publish reference hashes)
         digest = download_file(url, archive, DEFAULT_MAX_DOWNLOAD_SIZE, DEFAULT_DOWNLOAD_TIMEOUT)
-        logger.info("Downloaded SHA256: %s (verified via HTTPS to Google CDN)", digest)
+        logger.info("Downloaded archive SHA256: %s (diagnostic only)", digest)
         extract_tarball_safe(archive, temp_stage / "x")
     except Exception as exc:
         shutil.rmtree(temp_stage, ignore_errors=True)
         raise UpdateError(f"Download/extraction failed: {exc}") from exc
     finally:
-        if archive.exists():
-            archive.unlink(missing_ok=True)
-
-    roots = [p.parents[2] for p in (temp_stage / "x").glob("**/resources/app/product.json")]
-    if len(roots) != 1 or parse_version(installed_version(roots[0])) != parse_version(version):
-        shutil.rmtree(temp_stage, ignore_errors=True)
-        raise UpdateError("Extracted archive structure or version invalid.")
+        archive.unlink(missing_ok=True)
 
     final_stage = PENDING_DIR / version
     shutil.rmtree(final_stage, ignore_errors=True)
@@ -418,21 +388,31 @@ def download_and_extract(url: str, version: str) -> Path:
 
 
 def recover_interrupted_install(install_dir: Path = INSTALL_DIR) -> bool:
+    """If install_dir is missing or invalid, recover from backup. Never deletes backups if install is broken."""
     parent = install_dir.parent
     if not parent.exists():
         return False
-    for cand in parent.glob(f".{install_dir.name}.candidate-*"):
-        shutil.rmtree(cand, ignore_errors=True)
+
     temp_backups = sorted(parent.glob(f".{install_dir.name}.bak.tmp-*"))
     backup_dir = install_dir.with_name(f"{install_dir.name}.bak")
-    if not install_dir.exists():
+
+    # If installation is missing or corrupted, attempt recovery from available backups
+    if not is_valid_install(install_dir):
         source = temp_backups[-1] if temp_backups else (backup_dir if backup_dir.exists() else None)
-        if source:
-            logger.warning("Interrupted update detected. Restoring %s from %s...", install_dir, source)
+        if source and is_valid_install(source):
+            logger.warning("Invalid or missing installation detected. Restoring from %s...", source)
+            if install_dir.exists():
+                shutil.rmtree(install_dir, ignore_errors=True)
             os.rename(source, install_dir)
             return True
-    for tb in temp_backups:
-        shutil.rmtree(tb, ignore_errors=True)
+
+    # Only clean temporary artifacts when the active installation is confirmed healthy
+    if is_valid_install(install_dir):
+        for cand in parent.glob(f".{install_dir.name}.candidate-*"):
+            shutil.rmtree(cand, ignore_errors=True)
+        for tb in temp_backups:
+            shutil.rmtree(tb, ignore_errors=True)
+
     return False
 
 
@@ -465,6 +445,7 @@ def install(new_root: Path, version: str) -> None:
         shutil.rmtree(candidate, ignore_errors=True)
         raise UpdateError("IDE started during installation preparation.")
 
+    # Swap directories on the same filesystem
     os.rename(INSTALL_DIR, temp_backup)
     try:
         os.rename(candidate, INSTALL_DIR)
@@ -479,13 +460,11 @@ def install(new_root: Path, version: str) -> None:
         shutil.rmtree(candidate, ignore_errors=True)
         raise UpdateError(f"Installation failed, rolled back: {exc}") from exc
 
-    try:
-        if backup_dir.exists():
-            assert_safe(backup_dir, require_installed=False)
-            shutil.rmtree(backup_dir, ignore_errors=True)
-        os.rename(temp_backup, backup_dir)
-    except Exception as exc:
-        logger.warning("Backup rotation warning: %s", exc)
+    # Backup rotation: Only replace official backup once new installation is verified
+    if backup_dir.exists():
+        assert_safe(backup_dir, require_installed=False)
+        shutil.rmtree(backup_dir, ignore_errors=True)
+    os.rename(temp_backup, backup_dir)
 
     shutil.rmtree(PENDING_DIR / version, ignore_errors=True)
     logger.info("Successfully updated Antigravity IDE to v%s", version)
@@ -493,7 +472,7 @@ def install(new_root: Path, version: str) -> None:
 
 # ---------------------------------------------------------------- commands
 def check_updates() -> int:
-    recover_interrupted_install()
+    """Read-only: check for updates without any filesystem modifications."""
     current = installed_version()
     logger.info("Checking for updates (Current: v%s)...", current)
     latest, url = latest_release()
@@ -508,7 +487,7 @@ def check_updates() -> int:
 
 
 def dry_run() -> int:
-    recover_interrupted_install()
+    """Read-only: describe planned actions without any filesystem modifications."""
     current = installed_version()
     latest, url = latest_release()
     logger.info("[Dry Run] Current: v%s at %s", current, INSTALL_DIR)
@@ -518,11 +497,12 @@ def dry_run() -> int:
         return 0
     running = ide_running(INSTALL_DIR)
     logger.info("[Dry Run] IDE running: %s -> Plan: %s", running,
-                f"Stage v{latest} in pending/" if running else f"Download v{latest} and swap atomically.")
+                f"Stage v{latest} in pending/" if running else f"Download v{latest} and swap directories.")
     return 0
 
 
 def show_status() -> int:
+    """Read-only: display installation and timer status."""
     print("=== Antigravity IDE Updater Status ===")
     print(f"Updater Version:  {__version__}")
     print(f"Installation Dir: {INSTALL_DIR}")
@@ -678,7 +658,7 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    parser.add_argument("--check", action="store_true", help="Check for available updates")
+    parser.add_argument("--check", action="store_true", help="Check for available updates without installing")
     parser.add_argument("--dry-run", action="store_true", help="Simulate update without modifying installation")
     parser.add_argument("--status", action="store_true", help="Show current installation and timer status")
     parser.add_argument("--install", action="store_true", help="Install scripts and enable daily systemd user timer")
