@@ -386,6 +386,32 @@ class TestAtomicInstallationAndRollback(unittest.TestCase):
         # Crucial safeguard: corrupt backup must NOT be deleted if there is no valid installation
         self.assertTrue(temp_backup.exists())
 
+    def test_recovery_tries_subsequent_backups_when_latest_temp_is_corrupt(self):
+        # Scenario: install_dir missing, latest temp backup is corrupt, but official backup is valid
+        temp_backup = self.base_path / f".{self.install_dir.name}.bak.tmp-12345"
+        temp_backup.mkdir(parents=True, exist_ok=True)  # Corrupt / empty
+        backup_dir = self.install_dir.with_name(f"{self.install_dir.name}.bak")
+        self.create_mock_ide(backup_dir, "2.5.4")
+
+        recovered = updater.recover_interrupted_install(self.install_dir)
+        self.assertTrue(recovered)
+        self.assertTrue(self.install_dir.exists())
+        self.assertEqual(updater.installed_version(self.install_dir), "2.5.4")
+
+    def test_recovery_secures_missing_backup_when_active_install_healthy(self):
+        # Scenario: active install updated to 2.5.6, but backup_dir is missing while temp_backup (2.5.5) exists
+        self.create_mock_ide(self.install_dir, "2.5.6")
+        temp_backup = self.base_path / f".{self.install_dir.name}.bak.tmp-12345"
+        self.create_mock_ide(temp_backup, "2.5.5")
+        backup_dir = self.install_dir.with_name(f"{self.install_dir.name}.bak")
+        self.assertFalse(backup_dir.exists())
+
+        recovered = updater.recover_interrupted_install(self.install_dir)
+        self.assertFalse(recovered)
+        # temp_backup should have been promoted to backup_dir instead of deleted!
+        self.assertTrue(backup_dir.exists())
+        self.assertEqual(updater.installed_version(backup_dir), "2.5.5")
+
     def test_idempotent_install(self):
         self.create_mock_ide(self.install_dir, "2.5.5")
         staged_root = self.pending_dir / "2.5.5" / "x" / "Antigravity IDE"

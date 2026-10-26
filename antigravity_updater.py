@@ -394,24 +394,35 @@ def recover_interrupted_install(install_dir: Path = INSTALL_DIR) -> bool:
         return False
 
     temp_backups = sorted(parent.glob(f".{install_dir.name}.bak.tmp-*"))
+    old_backups = sorted(parent.glob(f".{install_dir.name}.bak.old-*"))
     backup_dir = install_dir.with_name(f"{install_dir.name}.bak")
 
-    # If installation is missing or corrupted, attempt recovery from available backups
+    # If installation is missing or corrupted, attempt recovery by evaluating all available backups
     if not is_valid_install(install_dir):
-        source = temp_backups[-1] if temp_backups else (backup_dir if backup_dir.exists() else None)
-        if source and is_valid_install(source):
-            logger.warning("Invalid or missing installation detected. Restoring from %s...", source)
-            if install_dir.exists():
-                shutil.rmtree(install_dir, ignore_errors=True)
-            os.rename(source, install_dir)
-            return True
+        sources = list(reversed(temp_backups)) + ([backup_dir] if backup_dir.exists() else []) + list(reversed(old_backups))
+        for source in sources:
+            if is_valid_install(source):
+                logger.warning("Invalid or missing installation detected. Restoring from %s...", source)
+                if install_dir.exists():
+                    shutil.rmtree(install_dir, ignore_errors=True)
+                os.rename(source, install_dir)
+                return True
 
     # Only clean temporary artifacts when the active installation is confirmed healthy
     if is_valid_install(install_dir):
+        if not backup_dir.exists():
+            # Promote newest valid temporary backup to official backup if missing
+            for candidate in list(reversed(temp_backups)) + list(reversed(old_backups)):
+                if is_valid_install(candidate):
+                    logger.info("Securing missing backup from %s...", candidate)
+                    os.rename(candidate, backup_dir)
+                    break
         for cand in parent.glob(f".{install_dir.name}.candidate-*"):
             shutil.rmtree(cand, ignore_errors=True)
-        for tb in temp_backups:
+        for tb in parent.glob(f".{install_dir.name}.bak.tmp-*"):
             shutil.rmtree(tb, ignore_errors=True)
+        for ob in parent.glob(f".{install_dir.name}.bak.old-*"):
+            shutil.rmtree(ob, ignore_errors=True)
 
     return False
 
@@ -460,11 +471,20 @@ def install(new_root: Path, version: str) -> None:
         shutil.rmtree(candidate, ignore_errors=True)
         raise UpdateError(f"Installation failed, rolled back: {exc}") from exc
 
-    # Backup rotation: Only replace official backup once new installation is verified
+    # Backup rotation: preserve previous backup until new backup is safely secured
+    old_backup = parent / f".{INSTALL_DIR.name}.bak.old-{os.getpid()}"
+    shutil.rmtree(old_backup, ignore_errors=True)
     if backup_dir.exists():
         assert_safe(backup_dir, require_installed=False)
-        shutil.rmtree(backup_dir, ignore_errors=True)
-    os.rename(temp_backup, backup_dir)
+        os.rename(backup_dir, old_backup)
+    try:
+        os.rename(temp_backup, backup_dir)
+    except Exception as exc:
+        if old_backup.exists() and not backup_dir.exists():
+            os.rename(old_backup, backup_dir)
+        raise UpdateError(f"Failed to secure backup directory: {exc}") from exc
+    if old_backup.exists():
+        shutil.rmtree(old_backup, ignore_errors=True)
 
     shutil.rmtree(PENDING_DIR / version, ignore_errors=True)
     logger.info("Successfully updated Antigravity IDE to v%s", version)
